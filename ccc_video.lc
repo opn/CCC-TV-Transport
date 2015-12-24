@@ -1,0 +1,353 @@
+<?rev
+	# PUT YOUR HANDLER NAMES  INTO THE GLOBAL gControllerHandlers AS A COMMA SEPARATED LIST
+	put "index" into gControllerHandlers
+
+	command index
+      put $_POST_RAW into rawPost
+      ccc_ProcessDrop rawPost
+	end index
+
+   command ccc_ProcessDrop rawPost
+      put json_ToArray (rawPost) into dropArray
+      put dropArray ["text"] into droppedURL
+      if droppedURL is empty then
+         put "https://media.ccc.de/v/30C3_-_5437_-_en_-_saal_g_-_201312282245_-_plants_machines_-_mrv_-_bbuegler#video&t=2" into droppedURL
+      end if
+
+      put ccc_CreateVideoPageJson (droppedURL) into someJSON
+      if the environment is not "development" then
+         put new header "Content-Type: application/json; charset=utf-8"
+         put new header "Access-Control-Allow-Origin: *"
+         put new header "Access-Control-Allow-Headers: Accept, Authorization, Content-Type"
+         put new header "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE OPTIONS, LINK, UNLINK"
+      end if
+      put someJSON
+   end ccc_ProcessDrop
+
+   function ccc_ConstructAuthorHTML cccArray
+      -- https://media.ccc.de/search?q=Robert%20M%20Ochshorn
+      -- this looses the order of authors if this is important
+      put cccArray ["authors"] into authorArray
+      repeat for each key someAuthor in authorArray
+         put authorArray [someAuthor] into authorUrl
+         put html_ConstructRefLink (someAuthor, authorUrl, "_blank") after authorHTML
+         put space & "and" & space  after authorHTML
+      end repeat
+      put word 1 to -2 of authorHTML into authorHTML
+      return authorHTML
+   end ccc_ConstructAuthorHTML
+
+   function ccc_ConstructTagHTML cccArray
+      -- https://media.ccc.de/tags/Art%20&%20Beauty
+      -- put cccArray ["ccctvURL"] into baseURL
+      put "https://media.ccc.de/" into baseURL
+
+      put cccArray ["tags"] into tagArray
+      repeat for each key someTag in tagArray
+         put tagArray [someTag] into relTagUrl
+         put baseURL & relTagUrl into tagURL
+         put html_ConstructRefLink (someTag, tagURL, "_blank") & comma & space after tagHTML
+      end repeat
+      put item 1 to -2 of tagHTML into tagHTML
+      return tagHTML
+   end ccc_ConstructTagHTML
+
+   function ccc_ConstructVideoHtml cccArray, pageAuthorLinks
+         put cccArray ["pageTitle"] into pageTitle
+         put cccArray ["ccctvURL"] into ccctvURL
+         put cccArray ["webmURL"] into webmURL
+
+         put "<video src=" &quote& webmURL &quote into someHTML
+         put  " width=" &quote& 400 &quote& " controls>" after someHTML
+         put "This is fallback content to display for user agents that do not support the video tag.</video>" after someHTML
+         put "<br></br>" after someHTML
+         put pageTitle && "- a talk by" && pageAuthorLinks & ". This video is licensed " after someHTML
+         put "<a href=" &quote& "http://creativecommons.org/licenses/by/3.0/" &quote&& "target=" &quote& "_blank" &quote& ">CC-by-3.0</a>, courtesy of" after someHTML
+         put " <a href="&quote& ccctvURL &quote && "target=" &quote& "_blank" &quote& ">CCC</a>." after someHTML
+         return someHTML
+      end ccc_ConstructVideoHtml
+
+   function ccc_ConvertArray cccArray
+      put cccArray ["pageTitle"] into pageTitle
+      put cccArray ["pageSubTitle"] into pageSubTitle
+      put cccArray ["description"] into pageDescription
+      put cccArray ["webmURL"] into webmURL
+
+      put fedwiki_ConstructNewPageArray (pageTitle, pageSubTitle) into pageArray
+
+      put ccc_ConstructAuthorHTML (cccArray) into pageAuthorLinks
+      put ccc_ConstructVideoHtml (cccArray, pageAuthorLinks) into pageExtract
+      fedwiki_AddHtmlToPageArray pageArray, pageExtract
+
+      fedwiki_AddMarkdownToPageArray pageArray, "# About"
+      fedwiki_AddParagraphToPageArray pageArray, pageDescription
+
+      fedwiki_AddMarkdownToPageArray pageArray, "# People"
+      fedwiki_AddHtmlToPageArray pageArray, pageAuthorLinks
+
+      fedwiki_AddMarkdownToPageArray pageArray, "# Tags"
+      put ccc_ConstructTagHTML (cccArray) into pageTagLinks
+      fedwiki_AddHtmlToPageArray pageArray, pageTagLinks
+
+      put "CCC Transporter" into pageArray ["metadata"]["author"]
+      return pageArray
+   end ccc_ConvertArray
+
+   function ccc_CreateVideoPageJson droppedURL
+      put ccc_FetchData (droppedURL) into cccArray
+      put ccc_ConvertArray (cccArray) into pageArray
+      put json_FromArray (pageArray) into someJSON
+      return someJSON
+   end ccc_CreateVideoPageJson
+
+   function ccc_ExtractData someHTML
+      /*
+      This code should be replaced by Xpath based code.
+
+      Here we list classes of divs:
+      div[3] = container-fluid
+      div[3]/div = tab-content
+      div[3]/div/div[3] = download
+      */
+
+      put revXMLCreateTree (someHTML, false, true, false) into treeID
+
+      -- put html_ExtractNodeContents ("html/body/div[3]/h1[1]", tidyXML) into pageTitle
+      put revXMLNodeContents (treeID, "html/body/div[3]/h1[1]") into pageTitle
+      put pageTitle into cccArray ["pageTitle"]
+
+      -- put html_ExtractNodeContents ("html/body/div[3]/h2[1]", tidyXML) into pageSubTitle
+      put revXMLNodeContents (treeID, "html/body/div[3]/h2[1]") into pageSubTitle
+      put pageSubTitle into cccArray ["pageSubTitle"]
+
+      -- put html_ExtractNodeContents ("html/body/div[3]/p[3]", tidyXML) into someDescription
+      put revXMLNodeContents (treeID, "html/body/div[3]/p[3]") into someDescription
+      put someDescription into cccArray ["description"]
+
+      -- put html_ExtractAttribute ("href", "html/body/div[3]/div/div[3]/ul[1]/li[3]/a[1]", tidyXML) into webmUrl
+      put revXMLAttribute (treeID, "html/body/div[3]/div/div[3]/ul[1]/li[3]/a[1]", "href") into webmUrl
+      put webmUrl into cccArray ["webmUrl"]
+
+      put "html/body/div[3]/" into fluidNode
+      put revXMLChildNames (treeID, fluidNode, CR, "a", true) into tNames
+      repeat for each line tName in tNames
+         put fluidNode & tName into tNode
+         put revXMLNodeContents (treeID, tNode) into someTag
+         put revXMLAttribute (treeID, tNode, "href") into relTagLink
+         put relTagLink into cccArray ["tags"][someTag]
+      end repeat
+
+      put "html/body/div[3]/p[1]/span" into personNode
+      put revXMLChildNames (treeID, personNode, CR, empty, true) into tNames
+      repeat for each line tName in tNames
+         put personNode & "/" & tName into tNode
+
+         -- put revXMLNodeContents ("html/body/div[3]/p[1]/span/a[1]", tidyXML) into personName
+         put revXMLNodeContents (treeID, tNode) into personName
+         -- put html_ExtractAttribute ("href", "html/body/div[3]/p[1]/span/a[1]", tidyXML) into relPersonLink
+         put revXMLAttribute (treeID, tNode, "href") into relPersonLink
+         put relPersonLink into cccArray ["authors"][personName]
+      end repeat
+      revDeleteXMLTree treeID
+      return cccArray
+   end ccc_ExtractData
+
+   function ccc_FetchData videoPageURL
+      put html_FetchTidy (videoPageURL) into tidyXML
+      put ccc_ExtractData (tidyXML) into cccArray
+      put videoPageURL into cccArray ["ccctvURL"]
+      return cccArray
+   end ccc_FetchData
+
+   command fedwiki_AddHtmlToPageArray @pageArray, someHtml, pID
+      put fedwiki_ConstructStoryHtmlArray (someHtml, pID) into itemArray
+      fedwiki_PageArrayAddToEnd itemArray, pageArray
+   end fedwiki_AddHtmlToPageArray
+
+   command fedwiki_AddMarkdownToPageArray @pageArray, someMarkdown, pID
+      put fedwiki_ConstructStoryMarkdownArray (someMarkdown, pID) into itemArray
+      fedwiki_PageArrayAddToEnd itemArray, pageArray
+   end fedwiki_AddMarkdownToPageArray
+
+   command fedwiki_AddParagraphToPageArray @pageArray, someText, pID
+      put fedwiki_ConstructStoryParagraphArray (someText, pID) into itemArray
+      fedwiki_PageArrayAddToEnd itemArray, pageArray
+   end fedwiki_AddParagraphToPageArray
+
+   command fedwiki_AddToEndOfIndexArray dataOrArray, @someArray
+      put item 2 of the extents of someArray into indexNum
+      put someArray [indexNum]["id"] into afterID
+      add 1 to indexNum
+      put dataOrArray into someArray [indexNum]
+      return afterID -- figure out what we just added it after
+   end fedwiki_AddToEndOfIndexArray
+
+   command fedwiki_AddToJournalArray @journalArray, itemArray, journalType, pAfterID, pMilliseconds
+      if pMilliseconds is empty then put the milliseconds into pMilliseconds
+      if pAfterID is not empty then
+         put pAfterID into journalEntryArray ["after"]
+      end if
+      put pMilliseconds into journalEntryArray ["date"]
+      put itemArray ["id"] into journalEntryArray ["id"]
+      put itemArray into journalEntryArray ["item"]
+      put journalType into journalEntryArray ["type"]
+
+      fedwiki_AddToEndOfIndexArray journalEntryArray, journalArray
+   end fedwiki_AddToJournalArray
+
+   function fedwiki_ConstructFactoryArray pID
+      if pID is empty then
+         put text_Hash (the ticks & "factory") into pID
+      end if
+      put "factory" into factoryArray ["type"]
+      put pID into factoryArray ["id"]
+      return factoryArray
+   end fedwiki_ConstructFactoryArray
+
+   function fedwiki_ConstructJournalArray pageTitle
+      put the milliseconds into journalArray [1]["date"]
+      put empty into journalArray [1]["item"]["story"]
+      put pageTitle into journalArray [1]["item"]["title"]
+      put "create" into journalArray [1]["type"]
+      return journalArray
+   end fedwiki_ConstructJournalArray
+
+   function fedwiki_ConstructNewPageArray pageTitle, pSomeText
+      put pageTitle into pageArray ["title"]
+      if pSomeText is not empty then fedwiki_AddParagraphToPageArray pageArray, pSomeText
+      put fedwiki_ConstructJournalArray (pageTitle) into pageArray ["journal"]
+      return pageArray
+   end fedwiki_ConstructNewPageArray
+
+   function fedwiki_ConstructStoryArray someStuff, itemType, pID
+      if pID is empty then
+         put text_Hash (the ticks & someText) into pID
+      end if
+      put someStuff into itemArray ["text"]
+      put itemType into itemArray ["type"]
+      put pID into itemArray ["id"]
+      return itemArray
+   end fedwiki_ConstructStoryArray
+
+   function fedwiki_ConstructStoryHtmlArray someHtml, pID
+      if pID is empty then
+         put text_Hash (the ticks & someText) into pID
+      end if
+      put someHtml into itemArray ["text"]
+      put "html" into itemArray ["type"]
+      put pID into itemArray ["id"]
+      return itemArray
+   end fedwiki_ConstructStoryHtmlArray
+
+   function fedwiki_ConstructStoryMarkdownArray someMarkdown, pID
+      put fedwiki_ConstructStoryArray (someMarkdown, "markdown", pID) into itemArray
+      return itemArray
+   end fedwiki_ConstructStoryMarkdownArray
+
+   function fedwiki_ConstructStoryParagraphArray someText, pID
+      if pID is empty then
+         put text_Hash (the ticks & someText) into pID
+      end if
+      put someText into paragraphArray ["text"]
+      put "paragraph" into paragraphArray ["type"]
+      put pID into paragraphArray ["id"]
+      return paragraphArray
+   end fedwiki_ConstructStoryParagraphArray
+
+   command fedwiki_PageArrayAddToEnd storyItemArray, @pageArray
+      -- this add a factory to the journal and a itemArray to the journal and story
+      -- all with the same id
+      put pageArray ["story"] into storyArray
+      put pageArray ["journal"] into journalArray
+      put storyItemArray ["id"] into itemID
+
+      -- add the item to the end of the story
+      fedwiki_AddToEndOfIndexArray storyItemArray, storyArray
+      -- figure out what we just added it after
+      -- this can be empty if it is the first entry
+      put the result into afterID
+      put storyArray into pageArray ["story"]
+
+      -- 3) Now let's add the edit or add to the journal
+      -- make the factory have the same id as the item we will add to the story
+      put fedwiki_ConstructFactoryArray (itemID) into factoryArray
+      -- now add a journal entry for adding after the id of the end paragraph
+      fedwiki_AddToJournalArray journalArray, factoryArray, "add", afterID
+
+      -- finally add the journal entry for editing the factory
+      fedwiki_AddToJournalArray journalArray, storyItemArray, "edit"
+      put journalArray into pageArray ["journal"]
+   end fedwiki_PageArrayAddToEnd
+
+   function html_ConstructRefLink someText, someLink, pTarget
+      if someLink is empty then return someText
+      replace quote with "&quot;" in someLink
+      put "<a href=" & quote & someLink & quote  into someLink
+      if pTarget is not empty then
+         -- "_blank" -- for opening in a new window
+         put space & "target=" &quote& pTarget &quote after someLink
+      end if
+      put ">" & someText & "</a>" after someLink
+      return someLink
+   end html_ConstructRefLink
+
+   function html_FetchTidy someUrl
+      put url someUrl into someHtml
+      put the tempname & ".html" into inputFile
+      put someHtml into url ("file:" & inputFile)
+
+      put "tidy --force-output true --char-encoding utf8 --input-encoding utf8 --output-encoding utf8 --output-xml true -asxml -m" && inputFile into someShell
+      put shell (someShell) into shellResult
+      put url ("file:" & inputFile) into tidyXML
+      return tidyXML
+   end html_FetchTidy
+
+   function json_FromArray pArray, pForceRootType, pPretty
+      -- identical to (simply renamed) "ArrayToJSON"
+      -- pArray - array to be encoded
+      -- pForceRootType - can force the root to be an object if it looks like an array
+      -- pPretty - include whitespace
+      repeat for each key tKey in pArray
+         if pArray[tKey] is an array then
+            put "}"&json_FromArray(pArray[tKey]) into pArray[tKey]
+         end if
+      end repeat
+      return(mergJSONEncode("pArray",pForceRootType,pPretty))
+   end json_FromArray
+
+   function json_ToArray pJSON
+      if pJSON is empty then return false
+      try -- as otherwise an error with non-json causes script to exit
+         local tArray,tKeys
+         if pJSON is empty then return empty
+         repeat for each line tKey in mergJSONDecode(pJSON,"tArray")
+            put json_ToArray(tArray[tKey]) into tArray[tKey]
+         end repeat
+         return tArray
+      catch e
+         return empty
+      end try
+   end json_ToArray
+
+   function md5_Hash someText
+      local hexDigest
+      put md5digest (someText) into someBinaryData
+      get binarydecode ("H*", someBinaryData, hexDigest)
+      return hexDigest
+   end md5_Hash
+
+   function sha1_Hash someData
+      local hexDigest
+      put sha1digest (someData) into someBinaryData
+      get binarydecode ("H*", someBinaryData, hexDigest)
+      return hexDigest
+   end sha1_Hash
+
+   function text_Hash someData, pWhichDigest
+      if pWhichDigest = "sha1" then
+         return sha1_Hash (someData)
+      else
+         return md5_Hash (someData)
+      end if
+   end text_Hash
+?>
